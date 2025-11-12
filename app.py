@@ -2,6 +2,8 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+import pandas as pd
+import time
 
 # --- 1. 한글 폰트 설정 (안정적인 방식) ---
 try:
@@ -17,9 +19,8 @@ except Exception:
     st.warning("폰트 로딩 중 문제가 발생했습니다. 기본 폰트로 표시됩니다.")
     font_prop = fm.FontProperties(size=12)
 
-# --- 2. 2D 열전달 시뮬레이션 함수 ---
-# (이전과 동일, 물리적으로 정확함)
-@st.cache_data # 동일한 조건의 시뮬레이션 결과를 캐시에 저장하여 반복 실행 시 속도 향상
+# --- 2. 2D 열전달 시뮬레이션 함수 (NumPy 벡터화로 속도 개선) ---
+@st.cache_data
 def run_2d_heat_simulation(k, L_x, rho, cp=1000, T_hot=1000+273.15, T_initial=20+273.15, sim_time_minutes=15):
     sim_time_seconds = sim_time_minutes * 60
     L_y = 0.1
@@ -40,19 +41,25 @@ def run_2d_heat_simulation(k, L_x, rho, cp=1000, T_hot=1000+273.15, T_initial=20
 
     for t_step in range(nt):
         T_old = T.copy()
+        
+        # 경계 조건 적용
         T[:, 0] = T_hot; T[:, -1] = T[:, -2]; T[0, :] = T[1, :]; T[-1, :] = T[-2, :]
-        for i in range(1, ny - 1):
-            for j in range(1, nx - 1):
-                term1 = (T_old[i+1, j] - 2*T_old[i, j] + T_old[i-1, j]) / dy**2
-                term2 = (T_old[i, j+1] - 2*T_old[i, j] + T_old[i, j-1]) / dx**2
-                T[i, j] = T_old[i, j] + alpha * dt * (term1 + term2)
+        
+        # --- 핵심 개선: NumPy 벡터화를 통해 내부 온도 전체를 한 번에 계산 ---
+        T_inner = T_old[1:-1, 1:-1]
+        laplacian_x = (T_old[1:-1, 2:] - 2 * T_inner + T_old[1:-1, :-2]) / dx**2
+        laplacian_y = (T_old[2:, 1:-1] - 2 * T_inner + T_old[:-2, 1:-1]) / dy**2
+        T[1:-1, 1:-1] = T_inner + alpha * dt * (laplacian_x + laplacian_y)
+        # --- 여기까지가 기존의 2중 for문을 대체합니다 ---
+
         current_inner_temp_k = np.mean(T[:, -1])
         temp_history_celsius[t_step] = current_inner_temp_k - 273.15
         if time_to_target is None and current_inner_temp_k >= TARGET_TEMP_KELVIN:
             time_to_target = time_points[t_step] / 60
+            
     return time_points, temp_history_celsius, T - 273.15, time_to_target
 
-# --- 3. 시나리오(재료) 정의 (상대적 비용 지수 추가) ---
+# --- 3. 시나리오(재료) 정의 ---
 scenarios = {
     '에어로겔': {'k': 0.02, 'rho': 80, 'cp': 1000, 'cost': 500},
     '고강도 경량 단열 타일': {'k': 0.06, 'rho': 145, 'cp': 1000, 'cost': 350},
@@ -78,8 +85,6 @@ material_props = scenarios[selected_material_name]
 k = material_props['k']; rho = material_props['rho']; cp = material_props['cp']
 
 if st.sidebar.button("🚀 개별 시뮬레이션 실행"):
-    # ... (이전과 동일한 개별 시뮬레이션 로직)
-    # ... UI 가독성을 위해 생략, 전체 코드는 정상 동작합니다.
     with st.spinner(f"'{selected_material_name}'(두께: {thickness_mm}mm) 시뮬레이션 중..."):
         time_pts, temp_hist, _, _ = run_2d_heat_simulation(k=k, L_x=thickness_m, rho=rho, cp=cp)
     
@@ -94,33 +99,44 @@ if st.sidebar.button("🚀 개별 시뮬레이션 실행"):
 
 st.divider()
 
-# --- 최적화 분석 섹션 ---
+# --- 최적화 분석 섹션 (진행 상황 바 추가) ---
 st.subheader(f"2. 전 재료 최적화 분석 (두께: {thickness_mm}mm)")
 if st.button("📊 최적화 분석 실행"):
     results = []
-    with st.spinner(f"두께 {thickness_mm}mm 조건으로 모든 재료를 시뮬레이션하고 분석합니다..."):
-        for name, props in scenarios.items():
-            _, temp_hist, _, _ = run_2d_heat_simulation(
-                k=props['k'], L_x=thickness_m, rho=props['rho'], cp=props['cp']
-            )
-            if temp_hist is not None:
-                final_temp = temp_hist[-1]
-                results.append({'name': name, 'final_temp': final_temp, **props})
+    materials_to_run = list(scenarios.items())
+    
+    # 진행 상황 바 초기화
+    progress_bar = st.progress(0, text="분석 시작...")
+    
+    for i, (name, props) in enumerate(materials_to_run):
+        # 진행 상황 바 텍스트 업데이트
+        progress_bar.text(f"({i+1}/{len(materials_to_run)}) '{name}' 시뮬레이션 중...")
+        
+        _, temp_hist, _, _ = run_2d_heat_simulation(
+            k=props['k'], L_x=thickness_m, rho=props['rho'], cp=props['cp']
+        )
+        if temp_hist is not None:
+            final_temp = temp_hist[-1]
+            results.append({'name': name, 'final_temp': final_temp, **props})
+        
+        # 진행 상황 바 업데이트
+        progress_bar.progress((i + 1) / len(materials_to_run))
+        
+    progress_bar.text("분석 완료!")
+    time.sleep(1) # 완료 메시지를 보여주기 위해 1초 대기
+    progress_bar.empty() # 진행 상황 바 숨기기
 
-    # 목표 온도를 통과한 시나리오만 필터링
     passed_scenarios = [r for r in results if r['final_temp'] < 120]
 
     if not passed_scenarios:
         st.warning(f"두께 {thickness_mm}mm 조건에서는 120°C 목표를 만족하는 재료가 없습니다. 두께를 늘려보세요.")
     else:
-        # 효율성 지표 계산
         for r in passed_scenarios:
             safety_margin = 120 - r['final_temp']
             r['perf_per_thickness'] = safety_margin / thickness_m
             r['perf_per_weight'] = safety_margin / (thickness_m * r['rho'])
             r['perf_per_cost'] = safety_margin / r['cost']
 
-        # 각 기준별 최적 재료 선정
         best_performance = min(passed_scenarios, key=lambda x: x['final_temp'])
         best_thickness_eff = max(passed_scenarios, key=lambda x: x['perf_per_thickness'])
         best_weight_eff = max(passed_scenarios, key=lambda x: x['perf_per_weight'])
@@ -138,18 +154,8 @@ if st.button("📊 최적화 분석 실행"):
             st.metric("💰 비용 효율", best_cost_eff['name'], "가성비 최적")
 
         with st.expander("자세한 분석 결과 보기"):
-            st.markdown("""
-            - **절대 성능**: 15분 후 최종 온도가 가장 낮은 재료입니다.
-            - **두께 효율**: (안전 마진) / (두께) 값이 가장 높은 재료로, 얇은 두께로 높은 성능을 냅니다.
-            - **중량 효율**: (안전 마진) / (무게) 값이 가장 높은 재료로, 가벼우면서 높은 성능을 냅니다.
-            - **비용 효율**: (안전 마진) / (상대적 비용) 값이 가장 높은 재료입니다. (비용은 시뮬레이션을 위한 상대값입니다)
-            """)
-            
-            # 데이터프레임으로 결과 표시
-            import pandas as pd
             df = pd.DataFrame(results)
             df['최종 온도 (°C)'] = df['final_temp'].round(1)
             df_display = df[['name', '최종 온도 (°C)', 'k', 'rho', 'cost']]
             df_display = df_display.rename(columns={'name':'재료', 'k':'열전도율', 'rho':'밀도', 'cost':'상대 비용'})
-            st.dataframe(df_display, use_container_width=True)
-
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
