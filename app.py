@@ -186,27 +186,37 @@ if st.button("단일 재료 분석 시작"):
     st.session_state.single_analysis_done = True
     st.session_state.recommended_materials = ['세라믹 섬유', 'PCM (고체상태)', '에어로겔']
 
-# --- 2단계 (새로 추가) ---
+# --- 2단계 (보강) ---
 if st.session_state.single_analysis_done:
-    st.header("💡 2단계: 최적 조합 추천")
+    st.header("💡 2단계: 최적 조합 및 두께 비율 추천")
     st.markdown("""
-    1단계 분석 결과와 열 차폐 원리를 바탕으로 가장 효율적인 다층 구조 조합을 추천합니다.
-    - **Layer 1 (외부)**: 고온의 열원에 직접 노출되므로, 내열성이 강한 **세라믹 섬유**가 적합합니다.
-    - **Layer 2 (중간)**: 상변화물질(**PCM**)을 배치하여 녹는 과정에서 많은 열(잠열)을 흡수시켜 온도 상승을 효과적으로 지연시킵니다.
-    - **Layer 3 (내부)**: 최종적으로 배터리를 보호하기 위해, 단열 성능이 가장 뛰어난 **에어로겔**을 사용합니다.
+    1단계 분석 결과를 바탕으로, 각 재료의 역할을 고려하여 최적의 조합과 두께 비율을 추천합니다. 
+    이는 단일 재료보다 훨씬 뛰어난 성능을 보여줍니다.
     """)
+    
+    cols = st.columns(3)
+    with cols[0]:
+        st.info("**Layer 1: 열 충격 완화 (Shield)**")
+        st.write("외부의 고온을 1차로 막아주는 **세라믹 섬유**를 배치합니다. (추천 비율: 20%)")
+    with cols[1]:
+        st.info("**Layer 2: 시간 지연 (Delay Engine)**")
+        st.write("상변화 과정에서 막대한 열을 흡수하는 **PCM**을 중앙에 두껍게 배치하여 온도 상승을 획기적으로 늦춥니다. (추천 비율: 50%)")
+    with cols[2]:
+        st.info("**Layer 3: 최종 방어 (Insulator)**")
+        st.write("단열 성능이 가장 뛰어난 **에어로겔**을 내부에 두어 배터리를 최종적으로 보호합니다. (추천 비율: 30%)")
+
     recommended_str = " -> ".join(st.session_state.recommended_materials)
-    st.success(f"**추천 조합 (외부 -> 내부):** {recommended_str}")
+    st.success(f"**추천 조합 및 비율 (외부 -> 내부):** {recommended_str} (20% : 50% : 30%)")
+
 
 # --- 3단계 (기존 2단계) ---
 st.header("🛠️ 3단계: 다층 구조 설계 및 성능 비교")
 if not st.session_state.single_analysis_done:
     st.info("먼저 1단계 분석을 실행하여 각 재료의 기본 성능을 확인하세요.")
 else:
-    st.markdown("2단계에서 추천된 조합을 바탕으로 두께를 조절하며 성능을 확인하거나, 직접 새로운 조합을 만들어보세요.")
+    st.markdown("2단계에서 추천된 **최적 조합과 두께 비율이 아래에 기본값으로 설정**되어 있습니다. 바로 시뮬레이션하여 단일 구조 대비 향상된 성능을 확인해보세요.")
     
     material_options = list(SCENARIOS.keys())
-    # 2단계의 추천 조합을 기본값으로 사용
     default_selection = st.session_state.get('recommended_materials', [])
     selected_materials = st.multiselect("3개의 재료를 선택하세요 (외부 -> 내부 순서)", 
                                       material_options, 
@@ -215,11 +225,22 @@ else:
 
     if len(selected_materials) == 3:
         st.subheader("두께 분배")
+        
+        # 추천 비율에 따른 기본 두께 계산
+        recommended_ratios = [0.2, 0.5, 0.3]
+        default_thicknesses = [max_thickness_mm * ratio for ratio in recommended_ratios]
+        
         cols = st.columns(3)
         thicknesses = []
         for i, mat_name in enumerate(selected_materials):
             with cols[i]:
-                thicknesses.append(st.slider(f"Layer {i+1}: {mat_name} (mm)", 0.0, max_thickness_mm, max_thickness_mm / 3, 0.5, key=f"thick_{i}_{mat_name}"))
+                # st.slider의 value에 계산된 기본값을 할당
+                thicknesses.append(st.slider(f"Layer {i+1}: {mat_name} (mm)", 
+                                           min_value=0.0, 
+                                           max_value=max_thickness_mm, 
+                                           value=default_thicknesses[i], 
+                                           step=0.5, 
+                                           key=f"thick_{i}_{mat_name}"))
 
         total_selected_thickness = sum(thicknesses)
         if total_selected_thickness > max_thickness_mm:
@@ -261,7 +282,8 @@ else:
                 col2.metric(f"최고 성능 단일 구조 ({best_single_name})", f"{best_single_delay:.2f} 분")
                 if delay_multi > best_single_delay:
                     improvement = delay_multi - best_single_delay
-                    col3.metric("성능 향상", f"✅ +{improvement:.2f} 분", help="다층 구조가 가장 좋은 단일 구조보다 지연 시간이 더 깁니다.")
+                    improvement_percent = (improvement / best_single_delay) * 100 if best_single_delay > 0 else 0
+                    col3.metric("성능 향상", f"✅ +{improvement:.2f} 분 ({improvement_percent:.1f}%)", help="다층 구조가 가장 좋은 단일 구조보다 지연 시간이 더 깁니다.")
                 else:
                     decline = best_single_delay - delay_multi
                     col3.metric("성능 저하", f"❌ -{decline:.2f} 분", help="다층 구조가 가장 좋은 단일 구조보다 성능이 낮습니다. 조합을 재고하세요.")
@@ -277,7 +299,7 @@ else:
                 ax.set_xlabel('시간 (분)', fontproperties=font_prop)
                 ax.set_ylabel('온도 (°C)', fontproperties=font_prop)
                 ax.legend(prop=font_prop, loc='best'); ax.grid(True, linestyle=':'); ax.set_xlim(0, target_delay_min * 2)
-                ax.set_ylim(15, max(150, np.max(temp_hist_multi) * 1.2) if len(temp_hist_multi) > 0 else 150)
+                ax.set_ylim(15, max(150, np.max(temp_hist_multi) * 1.2) if temp_hist_multi is not None and len(temp_hist_multi) > 0 else 150)
                 st.pyplot(fig)
     else:
         st.warning("먼저 3개의 재료를 선택해주세요.")
